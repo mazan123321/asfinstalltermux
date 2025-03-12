@@ -1,73 +1,69 @@
 #!/bin/bash
 
-# Обновление пакетов Termux
-echo "Обновление пакетов Termux..."
-pkg update && pkg upgrade -y
+# Цвета для вывода
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+CYAN='\033[0;36m'
+NC='\033[0m'
 
-# Установка необходимых зависимостей
-echo "Установка необходимых зависимостей..."
-pkg install proot-distro wget curl git -y
+echo -e "${GREEN}[*] Начинаем установку ASF...${NC}"
 
-# Установка Ubuntu через proot-distro
-echo "Установка Ubuntu через proot-distro..."
-proot-distro install ubuntu
+# Обновление Termux и установка proot-distro
+echo -e "${YELLOW}[*] Обновление Termux и установка proot-distro...${NC}"
+pkg update -y -o Dpkg::Options::="--force-confnew"
+pkg install proot-distro -y
+proot-distro install debian
 
-# Запуск Ubuntu и выполнение команд внутри chroot
-echo "Настройка Ubuntu..."
-proot-distro login ubuntu --shared-tmp -- bash <<EOF
-# Обновление пакетов Ubuntu
-apt update && apt upgrade -y
+# Установка зависимостей в Debian
+echo -e "${YELLOW}[*] Установка зависимостей в Debian...${NC}"
+proot-distro login debian -- bash -c 'apt update -y && apt upgrade -y && apt install libicu72 mono-runtime unzip curl -y'
+proot-distro login debian -- bash -c 'useradd -m asf'
 
-# Установка зависимостей
-apt install wget curl git unzip mono-complete -y
+# Определение архитектуры и загрузка ASF
+echo -e "${YELLOW}[*] Загрузка ASF для вашей архитектуры...${NC}"
+arch=$(proot-distro login debian -- bash -c 'dpkg --print-architecture')
+echo -e "Архитектура: ${CYAN}${arch}${NC}"
 
-# Создание пользователя для ASF
-adduser --disabled-password --gecos "" asfuser
-su - asfuser -c "mkdir ~/asf"
+URL=""
+case $arch in
+    "arm"|"armhf") 
+        URL="https://github.com/JustArchiNET/ArchiSteamFarm/releases/latest/download/ASF-linux-arm.zip" 
+        ;;
+    "arm64"|"aarch64") 
+        URL="https://github.com/JustArchiNET/ArchiSteamFarm/releases/latest/download/ASF-linux-arm64.zip" 
+        ;;
+    *)
+        echo -e "${RED}[!] Неподдерживаемая архитектура!${NC}"
+        exit 1
+        ;;
+esac
 
-# Скачивание и распаковка ASF
-su - asfuser -c "wget https://github.com/JustArchiNET/ArchiSteamFarm/releases/latest/download/ASF-linux-x64.zip -O ~/asf/asf.zip"
-su - asfuser -c "unzip ~/asf/asf.zip -d ~/asf"
+proot-distro login debian --user asf -- bash -c "curl -LO ${URL} && unzip *.zip -d ASF && rm *.zip"
 
-# Создание базового конфигурационного файла
-su - asfuser -c "mkdir ~/asf/config"
-cat <<CONFIG > /home/asfuser/asf/config/asf.json
-{
-  "IPC": true,
-  "Headless": true
-}
-CONFIG
+# Настройка окружения
+echo -e "${YELLOW}[*] Настройка окружения...${NC}"
+ln -s /data/data/com.termux/files/usr/var/lib/proot-distro/installed-rootfs/debian/home/asf/ASF ~/ASF
 
-# Создание конфигурации бота
-cat <<BOTCONFIG > /home/asfuser/asf/config/bot.json
-{
-  "SteamLogin": "your_username",
-  "SteamPassword": "your_password",
-  "Enabled": true
-}
-BOTCONFIG
+# Создание ярлыков
+echo -e "${YELLOW}[*] Создание ярлыков...${NC}"
+mkdir -p ~/.shortcuts/icons
+chmod 700 -R ~/.shortcuts
+chmod -R a-x,u=rwX,go-rwx ~/.shortcuts/icons
 
-# Создание скрипта автозапуска
-cat <<AUTOSTART > /usr/local/bin/start_asf.sh
+curl -sL "https://raw.githubusercontent.com/JustArchiNET/ArchiSteamFarm/main/resources/ASF_184x184.png" > ~/.shortcuts/icons/ASF.png
+
+# Скрипт запуска
+cat > ~/.shortcuts/ASF <<EOL
 #!/bin/bash
-su - asfuser -c "cd ~/asf && mono ArchiSteamFarm.exe"
-AUTOSTART
+proot-distro login debian --user asf -- sh -c "if [ \"\\\$(pidof ArchiSteamFarm)\" ]; then echo \"ASF уже запущен\"; else export DOTNET_GCHeapHardLimit=1C0000000 && ~/ASF/ArchiSteamFarm; fi"
+EOL
 
-chmod +x /usr/local/bin/start_asf.sh
+chmod +x ~/.shortcuts/ASF
 
-# Выход из chroot
-EOF
-
-# Настройка ярлыка для Termux Widget
-echo "Создание ярлыка для Termux Widget..."
-cat <<SHORTCUT > ~/start_asf_shortcut.sh
-#!/bin/bash
-proot-distro login ubuntu --shared-tmp -- bash -c "/usr/local/bin/start_asf.sh"
-SHORTCUT
-
-chmod +x ~/start_asf_shortcut.sh
-
-# Инструкция для пользователя
-echo "Установка завершена!"
-echo "Чтобы запустить ASF, выполните команду: ~/start_asf_shortcut.sh"
-echo "Вы также можете добавить этот ярлык в Termux Widget для быстрого доступа."
+echo -e "${GREEN}[✔] Установка завершена!${NC}"
+echo -e "Для запуска ASF:"
+echo -e "1. Добавьте виджет Termux:Widget на рабочий стол"
+echo -e "2. Выберите скрипт ASF"
+echo -e "3. Для доступа к веб-интерфейсу: ${CYAN}http://localhost:1242${NC}"
+echo -e "Файлы конфигурации: ${CYAN}~/ASF/config${NC}"
