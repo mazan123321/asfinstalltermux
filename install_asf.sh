@@ -1,6 +1,6 @@
 #!/bin/bash
 # Объединённый скрипт установки ASF и FPC с расширенной отладкой
-# Автор: @mazanO1 (на основе работ sidor0912 и JustArchiNET)
+# Автор: @mazanO1 (на основе работ exfador, sidor0912 и JustArchiNET)
 
 # Цвета
 GREEN='\033[32m'
