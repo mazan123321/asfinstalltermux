@@ -1,5 +1,5 @@
 #!/bin/bash
-# Объединённый скрипт установки ASF и FPC с расширенной отладкой
+# Объединённый скрипт установки ASF и FPC для Debian-based систем
 # Автор: @mazanO1 (на основе работ exfador, sidor0912 и JustArchiNET)
 
 # Цвета
@@ -32,11 +32,17 @@ debug() {
 }
 
 echo -e "${GREEN}"
-echo "Объединённый установщик ASF и FPC с расширенной отладкой"
+echo "Объединённый установщик ASF и FPC для Debian"
 echo "Создан @exfador на основе:"
 echo "- ArchiSteamFarm от JustArchiNET"
 echo "- FunPayCardinal от sidor0912"
 echo -e "${RESET}"
+
+# --- Проверка прав ---
+if [[ $EUID -ne 0 ]]; then
+    warn "Скрипт должен быть запущен с правами root! Используйте sudo."
+    exit 1
+fi
 
 # --- Шаг 1: Настройка пользователей ---
 info "Начинаем процесс установки"
@@ -58,32 +64,61 @@ while true; do
 done
 
 # --- Шаг 2: Обновление системы и установка зависимостей ---
-info "Начинаем обновление системы"
-log "Обновление списка пакетов"
-sudo apt update -y || error "Ошибка при обновлении списка пакетов"
-log "Обновление установленных пакетов"
-sudo apt upgrade -y || error "Ошибка при обновлении пакетов"
+info "Обновление системы и установка зависимостей"
+export DEBIAN_FRONTEND=noninteractive
 
-info "Установка необходимых зависимостей"
-log "Устанавливаем: curl unzip screen jq mono-runtime libicu72 python3.12"
-sudo apt install -y curl unzip screen jq mono-runtime libicu72 python3.12 || error "Ошибка при установке зависимостей"
+log "Обновление списка пакетов"
+apt update -yq || error "Ошибка при обновлении списка пакетов"
+
+log "Обновление системы"
+apt upgrade -yq || error "Ошибка при обновлении пакетов"
+
+info "Установка основных зависимостей"
+apt install -yq --no-install-recommends \
+  curl \
+  unzip \
+  screen \
+  jq \
+  mono-runtime \
+  ca-certificates \
+  apt-transport-https \
+  software-properties-common || error "Ошибка при установке зависимостей"
+
+# Установка libicu в зависимости от версии Debian
+debian_version=$(lsb_release -rs)
+if [[ "$debian_version" == "12" ]]; then
+    apt install -yq libicu72 || error "Ошибка установки libicu72"
+elif [[ "$debian_version" == "11" ]]; then
+    apt install -yq libicu67 || error "Ошибка установки libicu67"
+else
+    warn "Неизвестная версия Debian. Установите пакет libicu вручную"
+fi
+
+# Проверка наличия Python 3.12
+if ! command -v python3.12 &> /dev/null; then
+    warn "Python 3.12 не найден. Добавляем репозиторий deadsnakes..."
+    add-apt-repository -y ppa:deadsnakes/ppa || error "Ошибка добавления PPA"
+    apt update -yq
+    apt install -yq python3.12 python3.12-venv || error "Ошибка установки Python 3.12"
+fi
 
 # --- Шаг 3: Установка ArchiSteamFarm ---
-info "Начинаем установку ArchiSteamFarm"
+info "Установка ArchiSteamFarm (ASF)"
 log "Создание пользователя 'asf'"
-sudo useradd -m asf 2>/dev/null || log "Пользователь 'asf' уже существует"
+useradd -m -s /bin/bash asf 2>/dev/null || log "Пользователь 'asf' уже существует"
 
 arch=$(dpkg --print-architecture)
 log "Определена архитектура: $arch"
 
 case $arch in
-  arm|armhf)
-    info "Выбрана версия для ARM 32-bit"
+  armhf)
     asf_url="https://github.com/JustArchiNET/ArchiSteamFarm/releases/latest/download/ASF-linux-arm.zip"
     ;;
-  arm64|aarch64)
-    info "Выбрана версия для ARM 64-bit"
+  arm64)
     asf_url="https://github.com/JustArchiNET/ArchiSteamFarm/releases/latest/download/ASF-linux-arm64.zip"
+    ;;
+  amd64)
+    asf_url="https://github.com/JustArchiNET/ArchiSteamFarm/releases/latest/download/ASF-linux-x64.zip"
     ;;
   *)
     warn "Архитектура $arch не поддерживается ASF. Установка пропущена"
@@ -100,8 +135,9 @@ if [ -z "$asf_skip" ]; then
     rm ASF-linux-*.zip
   " || error "Ошибка при установке ASF"
 
-  log "Создание systemd-сервиса для ASF"
-  echo "[Unit]
+  log "Настройка systemd-сервиса для ASF"
+  cat <<EOF > /etc/systemd/system/asf.service
+[Unit]
 Description=ArchiSteamFarm
 After=network.target
 
@@ -113,21 +149,22 @@ Environment=DOTNET_GCHeapHardLimit=1C0000000
 Restart=always
 
 [Install]
-WantedBy=multi-user.target" | sudo tee /etc/systemd/system/asf.service >/dev/null
+WantedBy=multi-user.target
+EOF
 
-  log "Активация сервиса ASF"
-  sudo systemctl enable asf
-  sudo systemctl start asf
+  systemctl daemon-reload
+  systemctl enable asf
+  systemctl start asf
   log "Статус сервиса ASF:"
-  sudo systemctl status asf --no-pager
+  systemctl status asf --no-pager
 else
   warn "Установка ASF пропущена из-за неподдерживаемой архитектуры"
 fi
 
 # --- Шаг 4: Установка FunPayCardinal ---
-info "Начинаем установку FunPayCardinal"
+info "Установка FunPayCardinal (FPC)"
 log "Создание пользователя '$fpc_user'"
-sudo useradd -m "$fpc_user" 2>/dev/null || log "Пользователь '$fpc_user' уже существует"
+useradd -m -s /bin/bash "$fpc_user" || log "Пользователь '$fpc_user' уже существует"
 
 log "Получение списка версий с GitHub"
 gh_repo="sidor0912/FunPayCardinal"
@@ -141,53 +178,47 @@ echo -n -e "${CYAN}Выберите номер версии (или 'latest'): $
 read version_choice
 
 if [[ "$version_choice" == "latest" || -z "$version_choice" ]]; then
-  info "Выбрана последняя версия"
   dl_url=$(curl -sS https://api.github.com/repos/$gh_repo/releases/latest | jq -r '.zipball_url')
 else
-  info "Выбрана версия ${versions[$version_choice]}"
   dl_url=$(curl -sS https://api.github.com/repos/$gh_repo/releases | jq -r ".[] | select(.tag_name == \"${versions[$version_choice]}\") | .zipball_url")
 fi
 
-log "Создание директорий для установки"
+log "Скачивание и распаковка FPC"
 sudo -u "$fpc_user" bash -c "
   cd ~ &&
   mkdir -p fpc-install &&
-  cd fpc-install
-" || error "Ошибка при создании директорий"
+  cd fpc-install &&
+  curl -L $dl_url -o fpc.zip &&
+  unzip fpc.zip &&
+  mv */* ../ &&
+  cd .. &&
+  rm -rf fpc-install
+" || error "Ошибка при установке FPC"
 
-log "Скачивание FunPayCardinal"
-sudo -u "$fpc_user" curl -L $dl_url -o fpc.zip || error "Ошибка при скачивании архива"
-
-log "Распаковка архива"
-sudo -u "$fpc_user" unzip fpc.zip -d . || error "Ошибка при распаковке"
-sudo -u "$fpc_user" mv */* .. || error "Ошибка при перемещении файлов"
-sudo -u "$fpc_user" cd .. && rm -rf fpc-install || error "Ошибка при очистке"
-
-log "Создание виртуального окружения Python"
-sudo -u "$fpc_user" python3.12 -m venv pyvenv || error "Ошибка при создании venv"
-sudo -u "$fpc_user" ./pyvenv/bin/pip install -U pip || error "Ошибка при обновлении pip"
-
-log "Установка зависимостей"
-sudo -u "$fpc_user" ./pyvenv/bin/pip install -r FunPayCardinal/requirements.txt || error "Ошибка при установке зависимостей"
+log "Настройка Python окружения"
+sudo -u "$fpc_user" bash -c "
+  cd ~ &&
+  python3.12 -m venv pyvenv &&
+  ./pyvenv/bin/pip install -U pip &&
+  ./pyvenv/bin/pip install -r FunPayCardinal/requirements.txt
+" || error "Ошибка при настройке Python"
 
 # --- Завершение ---
-info "Почти готово! Выполняем финальные настройки"
-log "Запуск FPC через screen"
+info "Финальная настройка"
+log "Запуск FPC в screen-сессии"
 sudo -u "$fpc_user" screen -dmS fpc_session bash -c "
   cd ~/FunPayCardinal &&
   ../pyvenv/bin/python main.py
 "
 
-log "Проверка запущенных процессов"
-ps aux | grep -E 'ArchiSteamFarm|FunPayCardinal' || warn "Процессы не обнаружены"
-
-echo -e "${CYAN}################################################################################${RESET}"
-echo -e "${CYAN}Установка завершена!${RESET}"
-echo -e "${GREEN}Детали:${RESET}"
-echo -e "  - ASF: ${YELLOW}http://$(curl -s ifconfig.me):1242${RESET} (если установлен)"
-echo -e "  - FPC: ${YELLOW}screen -r fpc_session${RESET} (пользователь: $fpc_user)"
-echo -e "  - Конфиги ASF: ${YELLOW}/home/asf/ASF/config${RESET}"
-echo -e "  - Конфиги FPC: ${YELLOW}/home/$fpc_user/FunPayCardinal${RESET}"
-echo -e "${CYAN}################################################################################${RESET}"
-
-log "Важно: Проверьте открытые порты и настройте брандмауэр при необходимости"
+echo -e "${CYAN}================================================================================${RESET}"
+echo -e "${GREEN}Установка успешно завершена!${RESET}"
+echo -e "Доступные компоненты:"
+[ -z "$asf_skip" ] && \
+echo -e "  - ASF: ${YELLOW}http://$(curl -s ifconfig.me):1242${RESET} (логин: пароль из конфига)"
+echo -e "  - FPC: ${YELLOW}screen -r -U fpc_session${RESET} (под пользователем $fpc_user)"
+echo -e "Пути конфигурации:"
+[ -z "$asf_skip" ] && \
+echo -e "  - ASF config: ${YELLOW}/home/asf/ASF/config${RESET}"
+echo -e "  - FPC config: ${YELLOW}/home/$fpc_user/FunPayCardinal${RESET}"
+echo -e "${CYAN}================================================================================${RESET}"
